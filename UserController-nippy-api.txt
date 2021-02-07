@@ -1,0 +1,591 @@
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Api\ApiAbstractController;
+use Illuminate\Http\JsonResponse;
+use App\Traits\ResponseTrait;
+use App\Traits\RequestTrait;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Validator;
+use Hash;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
+use App\Traits\UtilityTrait;
+use App\Models\Profile;
+use App\Models\User;
+use Auth;
+use Mail;
+use App\Models\OauthAccessToken;
+use App\Models\CompanyMapping;
+
+class UserController extends ApiAbstractController
+{
+    use ResponseTrait, UtilityTrait;
+    
+    public function __construct()
+    {
+        parent::__construct();
+    }
+   
+    public function sendEmailVerificationNotification()
+    {
+        $this->notify(new VerifyEmail);
+    }
+
+    public function resend(Request $request)
+    {
+        $input = $request->only(['reset_link','is_verify']);
+        $activationLink = decrypt($input['reset_link']);
+        dd($activationLink);
+            $data = explode('$$', $activationLink);
+            $user = $data[2];
+            $is_verify = $user::where(
+                [
+                    ['id', $data[1]],
+                    ['reset_link', '!=', null]
+                ]
+            )->first();
+            if (empty($is_verify)) {
+                return $this->sendBadRequest('Link has expired.');
+            }
+            $input['is_verify'] = ($input['is_verify']);
+            $Verify_email = $is_verify->update(
+                ['is_verify' => $input['is_verify'], 'reset_link' => null]
+            );
+            // User::where(['email' => $input['email'], 'is_delete' => 0])->update(['reset_link' => $is_verify]);
+            if ($Verify_email) {
+                return $this->successResponse([], 'is_verify reset successfully');
+            } else {
+                return $this->sendBadRequest('is_verify reset failed');
+            }
+    }
+
+    public function emailverify(Request $request, $id, $parentId = null)
+    {
+        try {
+            $user = User::with('profile')->where('id',$id)->first();
+
+            if (!($user && $user->is_deleted == 0)) {
+                return $this->notFoundRequest('User not found');
+            }
+            $input = $this->objectToArray($request->input());
+
+            $input['id'] = $id;
+            $input = $this->prepareUpdateData($input, $user->toArray());
+            
+            $requiredParams = $this->requiredRequestParams('update', $id);
+            $validator = Validator::make($input, $requiredParams);
+            if ($validator->fails()) {
+                return $this->sendBadRequest(implode(', ', $validator->errors()->all()));
+            }
+            $demo = $user->update($input);
+            $data = User::find($id);
+
+                 $resetLink = '';
+            if (!($input['email'])) {
+                $resetLink = env(
+                    'ADMIN_LINK');
+            } else {
+                $resetLink = $this->getProtocol().'http://localhost/LaravelProjects/Nippy_admin/public'.env('MAIN_DOMAIN');
+            }
+            // dd($resetLink);
+            $otp = mt_rand(100000, 999999);
+            $fromEmail = env('MAIL_FROM', 'test1@adsumoriginator.com');
+            $fromName  = env('MAIL_NAME', 'nippy');
+            $subject   = 'verifyEmail';
+            if ($user) {
+            $activationLink = $resetLink.'/VerifyEmail'.'?resetLink='.encrypt(
+                    $input['email'].'$$'.$user->id.'$$'.$otp
+                );
+                // dd($activationLink);
+                $body =$activationLink;
+                $this->sendMail($input['email'], $fromEmail, $fromName, $body, $subject,'VerifyEmail');
+                User::where(['email' => $input['email'], 'is_delete' => 0])->update(['reset_link' => $activationLink],);
+                // dd($body);
+                    return $this->successResponse(
+                        $user->toArray(),
+                    'Email verification link sent on your email id'
+                    );
+            } else {
+                return $this->sendBadRequest('Email already verified.');
+            }
+        } catch (NotFoundHttpException $ex) {
+            return $this->notFoundRequest($ex);
+        } catch (\Exception $ex) {
+            return $this->sendErrorResponse($ex);
+        }
+
+    }
+
+
+
+
+    // online and offline status
+    public function UserStatus(Request $request, $parentId = null) 
+    {
+        try {
+            $user = User::with('profile')->where('status','0')->get();
+            // dd($user);
+            if ($user) {
+                return $this->successResponse($user->toArray(), 'Online users');
+            }
+            // elseif(($user && $user->status == 1)){
+            //     return $this->successResponse($user->toArray(), 'Offline ');
+            // }
+            return $this->notFoundRequest('User not found');
+        } catch (NotFoundHttpException $ex) {
+            return $this->notFoundRequest($ex);
+        } catch (\Exception $ex) {
+            return $this->sendErrorResponse($ex);
+        }
+    }
+
+
+    // public function listItem(Request $request, $parentId = null)
+    // {
+    //     try {
+    //         if (!$this->isSuperAdmin()) {
+    //             return $this->sendAccessDenied('Unauthorized access');
+    //         }
+    //         // $search = request('search', '');
+    //         $sortBy = request('sortBy', '');
+    //         // $managerFilter = request('managerFilter', '');
+    //         $direction = (strtoupper(request('sortDirection')) == 'ASC') ? false : true;
+    //         $user = User::with('profile')->where(
+    //             // function ($query) {
+    //             //     if ($companyId = request('parentId')) {
+    //             //         $companyMapping=CompanyMapping::where(
+    //             //             'company_id',
+    //             //             $companyId
+    //             //         )->pluck('user_id')->toArray();
+    //             //         $query->whereIn('id', $companyMapping);
+    //             //     }
+    //             // }
+    //         )->where('is_deleted', 0);
+    //         // if ($search) {
+    //         //     $user = $user->where('first_name', 'LIKE', '%' . $search . '%')
+    //         //         ->orWhere('last_name', 'LIKE', '%' . $search . '%')
+    //         //         ->orWhereRaw("concat(first_name, ' ', last_name) like '%".$search."%' ")
+    //         //         ->orWhere('email', 'LIKE', '%' . $search . '%')
+    //         //         ->orWhere('username', 'LIKE', '%' . $search . '%')
+    //         //         ->orWhere('phone', 'LIKE', '%' . $search . '%');
+    //         // }
+    //         // if ($managerFilter) {
+    //         //     $user = $user->where('type', 0);
+    //         // }
+    //         if (!empty($sortBy)) {
+    //             if ($sortBy == 'id') {
+    //                 $sortType = SORT_NUMERIC;
+    //             } else {
+    //                 $sortType = SORT_STRING;
+    //             }
+    //             $user = $user->get()->sortBy($sortBy, $sortType, $direction);
+    //         } else {
+    //             $user = $user->get()->sortBy('id', SORT_NUMERIC, 3);
+    //         }
+    //         $dataCount = $user->count();
+    //         if (empty($request->perpage)) {
+    //             $request->perpage = !empty($dataCount) ? $dataCount : 12;
+    //             if (!empty($request->page)) {
+    //                 $request->perpage = empty($dataCount) ? $dataCount : 12;
+    //             }
+    //         }
+    //         $user = $user->paginate($request->perpage);
+    //         // Append url query parameter in pagination
+    //         $user->appends(request()->query())->links();
+    //         $responseData = [];
+    //         if ($user) {
+    //             $responseData = $user->toArray();
+    //         }
+    //         return $this->successResponse($responseData, 'List of all users');
+    //     } catch (NotFoundHttpException $ex) {
+    //         return $this->notFoundRequest($ex);
+    //     } catch (\Exception $ex) {
+    //         return $this->sendErrorResponse($ex);
+    //     }
+    // }
+
+    public function createItem(Request $request, $parentId = null)
+    {
+       /* try {
+            $input = $this->objectToArray($request->input());
+            // if (!$this->isAdmin()) {
+            //     return $this->sendAccessDenied('Unauthorized access');
+            // }
+            if( strcmp( $input['password'], $input['confirmPassword'])){
+                return $this->sendBadRequest('password not match!!');
+            }
+            $requiredParams = $this->requiredRequestParams('create');
+            $validator = Validator::make($input, $requiredParams);
+
+            if ($validator->fails()) {
+                return $this->sendBadRequest(implode(', ', $validator->errors()->all()));
+            }
+
+            $password = $input['password'];
+            $input['is_active'] = 1;
+            $input['password'] = Hash::make($input['password']);
+            $user = User::create($input); 
+            $profileInput=$input;
+            $profileInput['user_id']=$user->id;
+            $profileInput['address_1']=$input['address_1'];
+            $profileInput['address_2']=$this->arrayGet('address_2',$input,'');
+            $profileInput['description']=$this->arrayGet('description',$input,'');
+            if($request->hasfile('image')) {
+                $file=$request->file('image');
+                $image_name = time().'-'.$file->getClientOriginalName();
+                $file->move(public_path('files/profile'), $image_name);
+                // $name = time().'.'.$file->extension();
+                $data = $image_name;  
+                //$image = implode(",", $data);
+                }
+            $profileInput['image']=$this->arrayGet('image',$input);  
+
+            Profile::create($profileInput);
+                
+            if ($user) {
+                // if ((int)$this->arrayGet('send_credentials', $input, '0') === 1) {
+                //     $this->prepareSendMailData(
+                //         $input,
+                //         $password,
+                //         $this->getProtocol().'://'. $company->domain_name . '.' . env('MAIN_DOMAIN')
+                //     );
+                // }
+                return $this->successResponse(
+                    $user->toArray(),
+                    $input['name'] . ' has been added as a  user'
+                );
+            } else {
+                return $this->sendBadRequest('Failed to create user');
+            }
+        } catch (NotFoundHttpException $ex) {
+            return $this->notFoundRequest($ex);
+        } catch (\Exception $ex) {
+            return $this->sendErrorResponse($ex);
+        }*/
+    }
+
+
+    public function LoginUser(Request $request, $parentId = null)
+    {
+        try {
+            $id =(Auth()->user()->id);
+            $user = User::with('profile')->where('id',$id)->get();
+            // $user = User::with('profile')->get() ;
+            if (!($user)) {
+                return $this->notFoundRequest('User not found');
+            }
+            return $this->successResponse($user->toArray(), 'User found');
+        } catch (NotFoundHttpException $ex) {
+            return $this->notFoundRequest($ex);
+        } catch (\Exception $ex) {
+            return $this->sendErrorResponse($ex);
+        }
+    }
+    public function ListItem(Request $request, $parentId = null)
+    {
+        try {
+            $user = User::with('profile')->get();
+
+            if ((count($user) > 0)) {
+                return $this->successResponse($user->toArray(), 'User found');
+            }
+            return $this->notFoundRequest('User not found');
+        } catch (NotFoundHttpException $ex) {
+            return $this->notFoundRequest($ex);
+        } catch (\Exception $ex) {
+            return $this->sendErrorResponse($ex);
+        }
+    }
+    public function getItem(Request $request, $id, $parentId = null)
+    {
+        try {
+            $user = User::with('profile')->where('id',$id)->first();
+            if (!($user && $user->is_delete == 0)) {
+                return $this->notFoundRequest('User not found');
+            }
+            // if (!$this->hasReadAccess($data)) {
+            //     return $this->sendAccessDenied('Unauthorized access');
+            // }
+            return $this->successResponse($user->toArray(), 'User found');
+        } catch (NotFoundHttpException $ex) {
+            return $this->notFoundRequest($ex);
+        } catch (\Exception $ex) {
+            return $this->sendErrorResponse($ex);
+        }
+    }
+
+    public function updateItem(Request $request, $id, $parentId = null)
+    {
+        // dd($request->all());
+    try {
+            $user = User::with('profile')->where('id',$id)->first();
+            // $user = User::find($id);
+            // print_r($user['profile']);
+            if (!($user && $user->is_deleted == 0)) {
+                return $this->notFoundRequest('User not found');
+            }
+            $input = $this->objectToArray($request->input());
+            // print_r($input);
+            // dd();
+            $input['id'] = $id;
+            $input = $this->prepareUpdateData($input, $user->toArray());
+            // print_r($input);
+            // dd();
+            $requiredParams = $this->requiredRequestParams('update', $id);
+            $validator = Validator::make($input, $requiredParams);
+            if ($validator->fails()) {
+                return $this->sendBadRequest(implode(', ', $validator->errors()->all()));
+            }
+            // if ($request->has('password')) {
+            //     $input['password'] = Hash::make($input['password']);
+            // }
+            // if($request->hasfile('image')) {
+            //     foreach($request->file('image') as $file){
+            //             $image_name = time().'-'.$file->getClientOriginalName();
+            //             $file->move(public_path('files/profile'), $image_name);
+            //             $data[] = $image_name;
+            //     }
+            //     $input['image']=json_encode($data);
+            // }
+
+            if($request->hasfile('image')) {
+                foreach($request->file('image') as $file){
+                        $image_name = time().'-'.$file->getClientOriginalName();
+                        $file->move(public_path('files/profile/'), $image_name);
+                        // $name = time().'.'.$file->extension();
+                        $document[] = $image_name;  
+                }
+                //$image = implode(",", $data);
+                $input['image']= json_encode($document);
+            }
+
+                $profile = Profile::where('user_id',$id)->first();
+                $profile = $profile->update($input);
+                $userUpdate = $user->update($input);
+                // $user = User::find($id);
+                $user = User::with('profile')->find($id);
+                if ($profile) {
+                    return $this->successResponse(
+                        $user->toArray(),
+                    ' has been updated as a super admin user'
+                    );
+                } else {
+                    return $this->sendBadRequest('Failed to update user details');
+                }
+        } catch (NotFoundHttpException $ex) {
+            return $this->notFoundRequest($ex);
+        } catch (\Exception $ex) {
+            return $this->sendErrorResponse($ex);
+        }
+    }
+    
+    public function deleteItem(Request $request, $id, $parentId = null)
+    {
+        try {
+            $user = User::find($id);
+            if (!($user && $user['is_deleted'] == 0)) {
+                return $this->notFoundRequest('User not found');
+            }
+            $company = Company::where(['is_deleted' => 0, 'admin_id' => $id])->pluck('company_name')->toArray();
+
+            if (!empty($company)) {
+                return $this->sendBadRequest(
+                    'This user has been assigned as an admin of '.
+                    implode(', ', $company).
+                    ' instance(s), so you can not remove it.'
+                );
+            }
+            if (!$this->hasDeleteAccess()) {
+                return $this->sendAccessDenied('Unauthorized access');
+            }
+            UserMappingRole::where('user_id', $id)->delete();
+            CompanyMapping::where('user_id', $id)->delete();
+            $userDelete = $user->update(['is_deleted'=>1]);
+            if ($userDelete) {
+                return $this->successResponse(
+                    $user->toArray(),
+                    $user['first_name'].' '.$user['last_name'].' has been removed as a super admin user'
+                );
+            } else {
+                return $this->sendBadRequest('Failed to remove user');
+            }
+        } catch (NotFoundHttpException $ex) {
+            return $this->notFoundRequest($ex);
+        } catch (\Exception $ex) {
+            return $this->sendErrorResponse($ex);
+        }
+    }
+
+    public function setJobstatus(Request $request)
+    {
+        try {
+            $input = $this->objectToArray($request->input());
+            $id=Auth::user()->id;
+            $user = User::where(['id'=>$id,'is_delete'=>0,'is_active'=>1,'role'=>2])->first();
+            if($user){
+                $userupdate=$user->update($input);
+                if($userupdate) {
+                    return $this->successResponse(
+                        $user->toArray(),
+                        ' has been update job status'
+                    );
+                } else {
+                    return $this->sendBadRequest('Failed to update job status');
+                }
+            } else {
+                return $this->notFoundRequest('User not found');
+            }
+
+        } catch (NotFoundHttpException $ex) {
+            return $this->notFoundRequest($ex);
+        } catch (\Exception $ex) {
+            return $this->sendErrorResponse($ex);
+        }
+    }
+
+    public function getUserList()
+    {
+        try {
+            $search = request('search', '');
+            if($this->isProvider()) {
+                $user = User::with('profile')->where(['is_delete'=>0,'role'=>2]);
+                
+            } else {
+                return $this->sendAccessDenied('Unauthorized access');
+            } 
+            // if (!$this->hasReadAccess($data)) {
+            //     return $this->sendAccessDenied('Unauthorized access');
+            // }
+            if (!empty($search)) {
+                $user = $user->where('name', 'LIKE', '%' . $search . '%')
+                    ->orWhere('email', 'LIKE', '%' . $search . '%');
+            } 
+            $user=$user->get();
+            if (!($user)) {
+                return $this->notFoundRequest('User not found');
+            }
+            return $this->successResponse($user->toArray(), 'User found');
+        } catch (NotFoundHttpException $ex) {
+            return $this->notFoundRequest($ex);
+        } catch (\Exception $ex) {
+            return $this->sendErrorResponse($ex);
+        }
+    }
+    /**
+     * This will prepare Data for update process
+     *
+     * @param array $data Data
+     * @param array $user User
+     *
+     * @return array       Data
+     */
+    protected function prepareUpdateData(array $data, array $user)
+    {
+        $data['user']['name'] = $this->arrayGet('name', $data, $user['name']);
+        $data['user']['email'] = $this->arrayGet('email', $data, $user['email']);
+        // $data['user']['role'] = $this->arrayGet('role', $data, $user['role']);
+        $data['user']['phone'] = $this->arrayGet('phone', $data, $user['phone']);
+        $data['user']['dob'] = $this->arrayGet('dob', $data, $user['dob']);
+        $data['user']['country'] = $this->arrayGet('country', $data, $user['country']);
+        $data['user']['city'] = $this->arrayGet('city', $data, $user['city']);
+        $data['user']['marital_status'] = $this->arrayGet('marital_status', $data, $user['marital_status']);
+        $data['user']['sexual_orientation'] = $this->arrayGet('sexual_orientation', $data, $user['sexual_orientation']);
+        $data['user']['height'] = $this->arrayGet('height', $data, $user['height']);
+        $data['user']['device_token'] = $this->arrayGet('device_token', $data, $user['device_token']);
+        $data['user']['device_id'] = $this->arrayGet('device_id', $data, $user['device_id']);
+        $data['user']['device_info'] = $this->arrayGet('device_info', $data, $user['device_info']);
+
+        $data['profile']['user_id'] = $this->arrayGet('user_id', $data, $user['profile']['user_id']);
+        $data['profile']['child'] = $this->arrayGet('child', $data, $user['profile']['child']);
+        $data['profile']['occupation'] = $this->arrayGet('occupation', $data, $user['profile']['occupation']);
+        $data['profile']['income'] = $this->arrayGet('income', $data, $user['profile']['income']);
+        $data['profile']['smoker'] = $this->arrayGet('smoker', $data, $user['profile']['smoker']);
+        $data['profile']['figure'] = $this->arrayGet('figure', $data, $user['profile']['figure']);
+        $data['profile']['ethenicity'] = $this->arrayGet('ethenicity', $data, $user['profile']['ethenicity']);
+        $data['profile']['hair_color'] = $this->arrayGet('hair_color', $data, $user['profile']['hair_color']);
+        $data['profile']['my_personality'] = $this->arrayGet('my_personality', $data, $user['profile']['my_personality']);
+        $data['profile']['sexual_practies'] = $this->arrayGet('sexual_practies', $data, $user['profile']['sexual_practies']);
+        $data['profile']['sports'] = $this->arrayGet('sports', $data, $user['profile']['sports']);
+        $data['profile']['hobbies'] = $this->arrayGet('hobbies', $data, $user['profile']['hobbies']);
+        $data['profile']['introduction'] = $this->arrayGet('introduction', $data, $user['profile']['introduction']);
+        // $data['profile']['image'] = $this->arrayGet('image', $data, $user['profile']['image']);
+
+        return $data;
+    }
+    /**
+     * Read Access permission check
+     *
+     * @param array $data Data
+     *
+     * @return boolean
+     */
+    protected function hasReadAccess($data = null)
+    {
+        return ($this->isSuperAdmin() || $this->currentUser->id == $data['id']);
+    }
+
+    /**
+     * Write Access permission check
+     *
+     * @param array $data Data
+     *
+     * @return boolean
+     */
+    protected function hasWriteAccess($data = null)
+    {
+        return ($this->isSuperAdmin() || $this->currentUser->id == $data['id']);
+    }
+
+    /**
+     * Delete Access permission check
+     *
+     * @param array $data Data
+     *
+     * @return boolean
+     */
+    protected function hasDeleteAccess($data = null)
+    {
+        return $this->isSuperAdmin();
+    }
+
+    /**
+     * Required request parameter
+     *
+     * @param string  $action action
+     * @param int|mix $id     ID
+     *
+     * @return array         array
+     */
+    public function requiredRequestParams(string $action, $id = null)
+    {
+        switch ($action) {
+            case 'create':
+                $params = [
+                    'email' => 'required|phone|unique:users,phone,NULL,id,is_deleted, 0',
+                    'name' => 'required',
+                    'password' => 'required',
+                    'phone' => 'required|int',
+                    'dob' => 'required',
+                    'country' => 'required',
+                    'city' => 'required_if',
+                    'marital_status' => 'required',
+                    'sexual_orientation' => 'required',
+                    'height' => 'required',
+                ];
+                break;
+            case 'update':
+                $params = [
+                    // 'email' => "unique:users,email,".$id.",id,is_deleted, 0",
+                    // 'username' => "unique:users,username,".$id.",id,is_deleted, 0",
+                    // 'first_name' => 'required',
+                    // 'last_name' => 'required',
+                ];
+                break;
+            default:
+                $params = [];
+                break;
+        }
+        return $params;
+    }
+}
