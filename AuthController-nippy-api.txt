@@ -1,0 +1,540 @@
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Traits\ResponseTrait;
+use App\Traits\RequestTrait;
+use App\Models\User;
+use App\Admin;
+use App\Models\Profile;
+use Carbon\Carbon;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Session;
+use Illuminate\Support\Facades\Validator;
+use App\Models\Authenticator;
+use Auth;
+use DB;
+use Mail;
+use App\Models\OauthAccessToken;
+use App\Traits\UtilityTrait;
+
+class AuthController extends ApiAbstractController
+{
+    use ResponseTrait, RequestTrait, UtilityTrait;
+
+    private $authenticator;
+
+    public function __construct(Authenticator $authenticator, Request $request)
+    {
+        $this->authenticator = $authenticator;
+        $this->request = $request;
+    }
+    public function loginFunction()
+    {
+        $input = $this->request->post();
+        $requiredParams = $this->requiredRequestParams('login');
+        $validator = Validator::make($input, $requiredParams);
+        if ($validator->fails()) {
+            return $this->sendBadRequest(implode(', ', $validator->errors()->all()));
+        }
+        $credentials['email'] = $input['email'];
+        if ($user = $this->authenticator->attempt($credentials)) {
+            $this->currentUser = $user;
+            $user = User::where('id',$user['id'])->first();
+            
+            $tokenResult = $user->createToken('Personal Access Token');
+            // dd($tokenResult);
+            $token = $tokenResult->token;
+            $input['remember_me'] = $this->arrayGet('remember_me', $input, 0);
+            if (((int)$input['remember_me'] === 1)) {
+                $token->expires_at = Carbon::now()->addWeeks(1);
+            }
+            $token->save();
+            $success['token'] = $tokenResult->accessToken;
+            $success['type'] = 'Bearer';
+            $success['expires_at'] = Carbon::parse(
+                $tokenResult->token->expires_at
+            )->toDateTimeString();
+            $success['user'] = $user;
+            return $this->successResponse($success, 'Logged in Successfully');
+       }
+    }
+
+
+    public function socialLogin(Request $request)
+    {
+        try {
+            $input = $this->objectToArray($request->input());
+            $requiredParams = $this->requiredRequestParams('socialLogin');
+            $validator = Validator::make($input, $requiredParams);
+            
+            $credentials['email'] = $input['email'];
+            if ($user = $this->authenticator->attempt($credentials)) {
+                $this->currentUser = $user;
+                $user = User::where('id',$user['id'])->first();
+                
+                $tokenResult = $user->createToken('Personal Access Token');
+                $token = $tokenResult->token;
+                $input['remember_me'] = $this->arrayGet('remember_me', $input, 0);
+                if (((int)$input['remember_me'] === 1)) {
+                    $token->expires_at = Carbon::now()->addWeeks(1);
+                }
+                $token->save();
+                $success['token'] = $tokenResult->accessToken;
+                $success['type'] = 'Bearer';
+                $success['expires_at'] = Carbon::parse(
+                    $tokenResult->token->expires_at
+                )->toDateTimeString();
+                $success['user'] = $user;
+                return $this->successResponse($success, 'Logged in Successfully');
+            } 
+            else 
+                if($validator->fails()) {
+                    return response()->json(['status' => "false", 'messages' => array(implode(', ', $validator->errors()->all()))]);
+                }
+                $user = User::create($input);
+                $profileInput=$input;
+                $profileInput['user_id']=$user->id;
+                Profile::create($profileInput);
+         
+    
+            //    $this->loginFunction();
+                $credentials['email'] = $input['email'];
+                if ($user = $this->authenticator->attempt($credentials)) {
+                    $this->currentUser = $user;
+                    $user = User::where('id',$user['id'])->first();
+                    $tokenResult = $user->createToken('Personal Access Token');
+                    $token = $tokenResult->token;
+                    $input['remember_me'] = $this->arrayGet('remember_me', $input, 0);
+                    if (((int)$input['remember_me'] === 1)) {
+                        $token->expires_at = Carbon::now()->addWeeks(1);
+                    }
+                    $token->save();
+                    $success['token'] = $tokenResult->accessToken;
+                    $success['type'] = 'Bearer';
+                    $success['expires_at'] = Carbon::parse(
+                        $tokenResult->token->expires_at
+                    )->toDateTimeString();
+                    $success['user'] = $user;
+                    return $this->successResponse($success, 'Welcome, You are Logged in Successfully');
+                } 
+        } catch (NotFoundHttpException $ex) {
+            return $this->notFoundRequest($ex);
+        } catch (\Exception $ex) {
+            return $this->sendErrorResponse($ex);
+        }
+    }
+
+    
+
+    public function register(Request $request){
+        try {
+            $input = $this->objectToArray($request->input());
+            // if (!$this->isAdmin()) {
+            //     return $this->sendAccessDenied('Unauthorized access');
+            // }
+            if( strcmp( $input['password'], $input['confirmPassword'])){
+                return $this->sendBadRequest('password not match!!');
+            }
+            $requiredParams = $this->requiredRequestParams('register');
+            $validator = Validator::make($input, $requiredParams);
+
+            if ($validator->fails()) {
+                return response()->json(['status' => "false", 'messages' => array(implode(', ', $validator->errors()->all()))]);
+            }
+            $password = $input['password'];
+            $input['is_active'] = 1;
+            $input['password'] = Hash::make($input['password']);
+            $user = User::create($input); 
+            $profileInput=$input;
+            $profileInput['user_id']=$user->id;
+            $profileInput['child']=$user->child;
+            $profileInput['occupation']=$user->occupation;
+            $profileInput['income']=$user->income;
+            $profileInput['smoker']=$user->smoker;
+            $profileInput['figure']=$user->figure;
+            $profileInput['ethenicity']=$user->ethenicity;
+            $profileInput['hair_color']=$user->hair_color;
+            $profileInput['my_personality']=$user->my_personality;
+            $profileInput['sexual_practies']=$user->sexual_practies;
+            $profileInput['sports']=$user->sports;
+            $profileInput['hobbies']=$user->hobbies;
+            $profileInput['introduction']=$user->introduction;
+        
+            if($request->hasfile('image')) {
+              
+                foreach($request->file('image') as $file){
+
+                        $image_name = time().'-'.$file->getClientOriginalName();
+                        $file->move(public_path('files/profile'), $image_name);
+                        // $name = time().'.'.$file->extension();
+                       
+                        $document[] = $image_name;  
+                }
+                //$image = implode(",", $data);
+                $profileInput['image']= json_encode($document);
+            }
+           
+           // $profileInput['image']=$this->arrayGet('image',$input);  
+           
+            Profile::create($profileInput);
+                
+            if ($user) {
+                // if ((int)$this->arrayGet('send_credentials', $input, '0') === 1) {
+                //     $this->prepareSendMailData(
+                //         $input,
+                //         $password,
+                //         $this->getProtocol().'://'. $company->domain_name . '.' . env('MAIN_DOMAIN')
+                //     );
+                // }
+                return $this->successResponse(
+                    $user->toArray(),
+                    $input['name'] . ' has been added as a  user'
+                );
+            } else {
+                return $this->sendBadRequest('Failed to create user');
+            }
+        } catch (NotFoundHttpException $ex) {
+            return $this->notFoundRequest($ex);
+        } catch (\Exception $ex) {
+            return $this->sendErrorResponse($ex);
+        }
+    }
+
+   /*
+     * Login endpoint
+     *
+     * @return json response
+     */
+    public function login()
+    {
+        $input = $this->request->post();
+        $requiredParams = $this->requiredRequestParams('login');
+        $validator = Validator::make($input, $requiredParams);
+        if ($validator->fails()) {
+            return $this->sendBadRequest(implode(', ', $validator->errors()->all()));
+        }
+        $credentials['phone'] = $input['phone'];
+        // $credentials['email'] = $input['email'];
+        $credentials['password'] = $input['password'];
+          
+        if ($user = $this->authenticator->attempt($credentials)) {
+            $this->currentUser = $user;
+            // $update = User::where('id',$user['id'])->update(['device_token'=>$input['device_token'],'device_id'=>$input['device_id'],'device_info'=>$input['device_info']]);
+            $user = User::where('id',$user['id'])->first();
+            $tokenResult = $user->createToken('Personal Access Token');
+            $token = $tokenResult->token;
+            $input['remember_me'] = $this->arrayGet('remember_me', $input, 0);
+            if (((int)$input['remember_me'] === 1)) {
+                $token->expires_at = Carbon::now()->addWeeks(1);
+            }
+            $token->save();
+            $success['token'] = $tokenResult->accessToken;
+            $success['type'] = 'Bearer';
+            $success['expires_at'] = Carbon::parse(
+                $tokenResult->token->expires_at
+            )->toDateTimeString();
+            $success['user'] = $user;
+           
+            return $this->successResponse($success, 'Logged in Successfully');
+        } else {
+            return $this->sendUnauthorised(
+                'The username and password that you entered did not match our records.Please double-check and try again'
+            );
+        }
+    }
+
+    
+    /**
+     * Logout endpoint
+     *
+     * @return json response
+     */
+    public function logout()
+    {
+        if (Auth::check()) {
+            $accessToken = $this->request->user()->token();
+            $res = OauthAccessToken::where('id', $accessToken->id)->delete();
+            if ($res) {
+                return $this->successResponse([], 'Logged out successfully');
+            }
+            return $this->sendBadRequest();
+        }
+        return $this->sendUnauthorised();
+    }
+
+   
+    /**
+     * This function will send reset password link to email
+     *
+     * @param Request $request Request
+     *
+     * @return JsonResponse   JsonResponse
+     */
+    public function forgetPassword(Request $request)
+    {
+        try {
+            $input = $request->only('email');
+            $provider = 'App\\Models\\User';
+            // if ($input['provider'] === 'admins') {
+            //     $provider = 'App\\Admin';
+            // }
+            $user = $provider::where(['email' => $input['email'], 'is_delete' => 0])->first();
+            // $resetLink = '';
+            // if ($input['provider'] === 'admins') {
+            //     $resetLink = env(
+            //         'ADMIN_LINK'
+            //     );
+            // } else {
+                
+                // $resetLink = $this->getProtocol().'://'.env('MAIN_DOMAIN');
+            // }
+            $password =$this->randomPassword();
+            $otp = mt_rand(100000, 999999);
+            $fromEmail = env('MAIL_FROM', 'test1@adsumoriginator.com');
+            $fromName  = env('MAIL_NAME', 'kamdo');
+            $subject   = 'resetPassword';
+            if ($user) {
+                // $activationLink = $resetLink.'/resetPassword'.'?resetLink='.encrypt(
+                //     $input['email'].'$$'.$user->id.'$$'.$otp
+                // );
+                $body =$password;
+               
+                $this->sendMail($input['email'], $fromEmail, $fromName, $body, $subject, 'resetPassword');
+                User::where(['email' => $input['email'], 'is_delete' => 0])->update(['reset_link' => $password]);
+                return $this->successResponse($user->toArray(), 'Reset link mail sent successfully');
+            } else {
+                return $this->sendBadRequest('User not found');
+            }
+        } catch (NotFoundHttpException $ex) {
+            return $this->notFoundRequest($ex);
+        } catch (\Exception $ex) {
+            return $this->sendErrorResponse($ex);
+        }
+    }
+
+    
+
+    /**
+     * This will reset password of your account
+     *
+     * @param Request $request Request
+     *
+     * @return jsonResponse   JSONResponse
+     */
+    public function resetPassword(Request $request)
+    {
+        // $input = $request->only(['reset_link','password']);
+        // $activationLink = decrypt($input['reset_link']);
+        // $data = explode('$$', $activationLink);
+        // $user = $data[2];
+        // $resetPassword = $user::where(
+        //     [
+        //         ['id', $data[1]],
+        //         ['reset_link', '!=', null]
+        //     ]
+        // )->first();
+        // if (empty($resetPassword)) {
+        //     return $this->sendBadRequest('Link has expired.');
+        // }
+        // $input['password'] = Hash::make($input['password']);
+        // $passwordReset = $resetPassword->update(
+        //     ['password' => $input['password'], 'reset_link' => null]
+        // );
+        // if ($passwordReset) {
+        //     return $this->successResponse([], 'Password reset successfully');
+        // } else {
+        //     return $this->sendBadRequest('Password reset failed');
+        // }
+    }
+
+   
+
+    public function change_password(Request $request)
+    {
+        $input = $request->all();
+        $userid = Auth::user()->id;
+       
+        $requiredParams = $this->requiredRequestParams('change-password');
+        $validator = Validator::make($input, $requiredParams);
+        if ($validator->fails()) {
+            return $this->sendBadRequest(implode(', ', $validator->errors()->all()));
+        }
+        try {
+            if ((Hash::check(request('old_password'), Auth::user()->password)) == false) {
+                return $this->sendBadRequest('Check your old password');
+
+            } else if ((Hash::check(request('new_password'), Auth::user()->password)) == true) {
+                return $this->sendBadRequest('Please enter a password which is not similar then current password');
+            } else {
+                User::where('id', $userid)->update(['password' => Hash::make($input['new_password'])]);
+                return $this->successResponse([], 'Password reset successfully');   
+            }
+        } catch (\Exception $ex) {
+                return $this->sendErrorResponse($ex);
+        }
+        
+    }
+    
+   
+
+
+   
+
+
+
+    /**
+     * Update existing item
+     *
+     * @param Request  $request  request
+     * @param int      $id       id
+     * @param int|null $parentId parent Id
+     *
+     * @return Response
+     */
+    public function updateItem(Request $request, $id, $parentId = null)
+    {
+        return $this->sendNotImplemented();
+    }
+
+    /**
+     * List all data
+     *
+     * @param Request  $request  request
+     * @param int|null $parentId parent Id
+     *
+     * @return Response
+     */
+    public function listItem(Request $request, $parentId = null)
+    {
+        return $this->sendNotImplemented();
+    }
+
+    /**
+     * Get single item
+     *
+     * @param Request  $request  request
+     * @param int      $id       id
+     * @param int|null $parentId parent Id
+     *
+     * @return Response
+     */
+    public function getItem(Request $request, $id, $parentId = null)
+    {
+        return $this->sendNotImplemented();
+    }
+
+    /**
+     * Create new item
+     *
+     * @param Request  $request  request
+     * @param int|null $parentId parent Id
+     *
+     * @return Response
+     */
+    public function createItem(Request $request, $parentId = null)
+    {
+        return $this->sendNotImplemented();
+    }
+
+    /**
+     * Delete single item
+     *
+     * @param Request  $request  request
+     * @param int      $id       id
+     * @param int|null $parentId parent Id
+     *
+     * @return Response
+     */
+    public function deleteItem(Request $request, $id, $parentId = null)
+    {
+        return $this->sendNotImplemented();
+    }
+
+    /**
+     * Chekc user has read access
+     *
+     * @param array $data
+     *
+     * @return boolean
+     */
+    protected function hasReadAccess($data = null)
+    {
+        return true;
+    }
+
+    /**
+     * Chekc user has write access
+     *
+     * @param array $data
+     *
+     * @return boolean
+     */
+    protected function hasWriteAccess($data = null)
+    {
+        return true;
+    }
+
+    /**
+     * Chekc user has delete access
+     *
+     * @param array $data
+     *
+     * @return boolean
+     */
+    protected function hasDeleteAccess($data = null)
+    {
+        return true;
+    }
+
+    /**
+     * Check required parameters
+     *
+     * @param string $action action name
+     *
+     * @return array
+     */
+    public function requiredRequestParams(string $action)
+    {
+        switch ($action) {
+            case 'socialLogin':
+                $params = [
+                    'email'=>'required',
+                ];
+                break;
+            case 'login':
+                    $params = [
+                    'phone' => 'required',
+                    // 'email' => 'required',
+                    'password' => 'required',
+                    ];
+                    break;
+            case 'register':
+                $params = [
+                    'name' => 'required',
+                    'email'=>'required|email|unique:users,email,NULL,id,is_delete, 0',
+                    'password' => 'required',
+                    'phone' => 'required|unique:users,phone,NULL,id,is_delete, 0',
+                    ];
+                break;
+            case 'sendtoken':
+                $params = [
+                    'email' => 'required|email',
+                ];
+                break;
+            case 'change-password':
+                $params = [
+                    'old_password' => 'required',
+                    'new_password' => 'required',
+                    'confirm_password' => 'required|same:new_password',
+                ];
+                break;
+            default:
+                $params = [];
+                break;
+        }
+        return $params;
+    }
+}
